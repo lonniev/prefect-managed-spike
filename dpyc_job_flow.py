@@ -39,6 +39,7 @@ from typing import Any
 
 import httpx
 from prefect import flow
+from prefect.artifacts import create_markdown_artifact
 from prefect.blocks.system import Secret
 
 from tollbooth.vault_encryption import VaultCipher
@@ -77,9 +78,16 @@ def _do_http_request(req: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-@flow(name="dpyc-job-flow", retries=0, log_prints=False, persist_result=True)
+@flow(name="dpyc-job-flow", retries=0, log_prints=False)
 def dpyc_job_flow(closure_b64: str) -> dict[str, Any]:
-    """Open a sealed closure, dispatch its op, return the raw result.
+    """Open a sealed closure, dispatch its op, publish the result as an artifact.
+
+    The result travels back to the triggering MCP via a **Prefect Artifact**
+    (stored in Prefect Cloud, auto-associated with this flow run, retrievable
+    with the MCP's existing API key) — NOT via Prefect result storage, whose
+    default is the worker's local disk and so is unreadable from another host.
+    The artifact body is the JSON result; it carries the upstream *response*
+    only, never the request's auth headers.
 
     ``retries=0`` deliberately: the MCP's claim-check layer owns retry/refund
     semantics (a fresh ``start_async_job`` is the retry), and ``http_request``
@@ -88,5 +96,8 @@ def dpyc_job_flow(closure_b64: str) -> dict[str, Any]:
     spec = _open_closure(closure_b64)
     op = spec.get("op")
     if op == "http_request":
-        return _do_http_request(spec["request"])
-    raise ValueError(f"unknown closure op: {op!r}")
+        result = _do_http_request(spec["request"])
+    else:
+        raise ValueError(f"unknown closure op: {op!r}")
+    create_markdown_artifact(markdown=json.dumps(result))
+    return result
